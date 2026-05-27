@@ -1,0 +1,120 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Team {
+  on_shore
+  off_shore
+}
+
+enum Priority {
+  low
+  mid
+  high
+  escalated
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  contactEmail String?   @unique @map("contact_email")
+  passwordHash String    @map("password_hash")
+  name         String?
+  team         Team?
+  isAdmin      Boolean   @default(false) @map("is_admin")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  comments     Comment[]
+  workspaceAccesses UserWorkspaceAccess[]
+}
+
+model Workspace {
+  id          String       @id @default(cuid())
+  name        String
+  sortOrder   Int          @default(0) @map("sort_order")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  handoffDays HandoffDay[]
+  userAccesses UserWorkspaceAccess[]
+
+  @@map("Workspace")
+}
+
+model UserWorkspaceAccess {
+  userId      String    @map("user_id")
+  workspaceId String    @map("workspace_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@id([userId, workspaceId])
+  @@map("user_workspace_access")
+}
+
+model HandoffDay {
+  id            String            @id @default(cuid())
+  workspaceId   String            @map("workspace_id")
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  handoffDate   DateTime          @map("handoff_date") @db.Date
+  createdAt     DateTime          @default(now()) @map("created_at")
+  topics        HandoffDayTopic[]
+
+  @@unique([workspaceId, handoffDate])
+}
+
+model Topic {
+  id           String            @id @default(cuid())
+  summary      String            @db.Text
+  shortSummary String            @map("short_summary")
+  owner        String?
+  priority     Priority?
+  sheetData    Json?             @map("sheet_data")
+  isClosed     Boolean           @default(false) @map("is_closed")
+  closedAt     DateTime?         @map("closed_at")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  handoffDays  HandoffDayTopic[]
+  comments     Comment[]
+}
+
+model HandoffDayTopic {
+  handoffDayId String     @map("handoff_day_id")
+  topicId      String     @map("topic_id")
+  sortOrder    Int        @default(0) @map("sort_order")
+  handoffDay   HandoffDay @relation(fields: [handoffDayId], references: [id], onDelete: Cascade)
+  topic        Topic      @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@id([handoffDayId, topicId])
+  @@map("handoff_day_topics")
+}
+
+model Comment {
+  id          String       @id @default(cuid())
+  topicId     String       @map("topic_id")
+  authorId    String       @map("author_id")
+  team        Team
+  body        String       @db.Text
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @default(now()) @updatedAt @map("updated_at")
+  topic       Topic        @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  author      User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+
+  @@index([topicId, team])
+  @@map("comments")
+}
+
+model Attachment {
+  id               String   @id @default(cuid())
+  commentId        String   @map("comment_id")
+  storagePath      String   @map("storage_path")
+  originalFilename String   @map("original_filename")
+  mimeType         String   @map("mime_type")
+  sizeBytes        BigInt   @map("size_bytes")
+  createdAt        DateTime @default(now()) @map("created_at")
+  comment          Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
