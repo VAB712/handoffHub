@@ -11,6 +11,10 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Handoff Hub",
   description: "Daily handoff (on-prem)",
+  icons: {
+    icon: "/images/logos/logosmall.jpg",
+    shortcut: "/images/logos/logosmall.jpg",
+  },
 };
 
 export default function RootLayout({

@@ -5,6 +5,7 @@ export default {
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/lib/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
     extend: {
@@ -13,5 +14,6 @@ export default {
       },
     },
   },
+  safelist: ["text-blue-700", "text-orange-700", "text-green-700"],
   plugins: [],
 } satisfies Config;

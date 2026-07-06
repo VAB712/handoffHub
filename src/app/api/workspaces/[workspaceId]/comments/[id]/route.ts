@@ -6,10 +6,11 @@ import { formatCommentLine } from "@/lib/format-comment";
 import { resolveDisplayTimeZone } from "@/lib/display-tz";
 import { canEditComment } from "@/lib/comment-permissions";
 import { assertCommentEditAllowed } from "@/lib/handoff-policy";
+import { TEAM_VALUES } from "@/lib/team";
 
 const patchSchema = z.object({
   body: z.string().min(1).max(100_000),
-  team: z.enum(["on_shore", "off_shore"]).optional(),
+  team: z.enum(TEAM_VALUES).optional(),
   clientTimeZone: z.string().optional(),
 });
 

@@ -10,6 +10,7 @@ datasource db {
 enum Team {
   on_shore
   off_shore
+  none
 }
 
 enum Priority {

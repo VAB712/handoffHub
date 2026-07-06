@@ -5,7 +5,7 @@ const prisma = new PrismaClient();
 
 function seedTeam(): Team | undefined {
   const raw = process.env.SEED_USER_TEAM?.trim();
-  if (raw === "on_shore" || raw === "off_shore") return raw;
+  if (raw === "on_shore" || raw === "off_shore" || raw === "none") return raw;
   return undefined;
 }
 

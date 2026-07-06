@@ -31,14 +31,26 @@ function LoginForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#f5dfdf]/50 px-4">
+    <div className="relative flex min-h-screen items-start justify-center bg-white px-4 pt-10 sm:pt-12">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/images/logos/amdocslogo.png"
+        alt="Amdocs"
+        className="fixed bottom-4 right-4 h-10 w-auto sm:bottom-6 sm:right-6 sm:h-12"
+      />
       <div className="w-full max-w-md">
-        <h1 className="mb-3 text-center text-2xl font-semibold text-slate-900">Handoff Hub</h1>
-        <div className="rounded-xl border border-slate-200 bg-[#d7d7fa]/30 p-8 shadow-sm">
-          <h2 className="text-center text-xl font-semibold text-slate-900">Sign in</h2>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/images/logos/logo2.png"
+          alt=""
+          className="mx-auto mb-12 h-32 w-auto object-contain sm:mb-16 sm:h-40"
+        />
+        <h1 className="mb-3 text-center text-2xl font-semibold text-blue-900">Handoff Hub</h1>
+        <div className="rounded-xl border border-blue-200/70 bg-gradient-to-br from-blue-50 via-cyan-50 to-emerald-50 p-8 shadow-md shadow-blue-100/40">
+          <h2 className="text-center text-xl font-semibold text-blue-900">Sign in</h2>
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700" htmlFor="email">
+              <label className="block text-sm font-medium text-blue-900/80" htmlFor="email">
                 User ID
               </label>
               <input
@@ -48,11 +60,11 @@ function LoginForm() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-400 focus:ring-2"
+                className="mt-1 w-full rounded-md border border-blue-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700" htmlFor="password">
+              <label className="block text-sm font-medium text-blue-900/80" htmlFor="password">
                 Password
               </label>
               <input
@@ -62,14 +74,14 @@ function LoginForm() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-400 focus:ring-2"
+                className="mt-1 w-full rounded-md border border-blue-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30"
               />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
             <button
               type="submit"
               disabled={pending}
-              className="w-full rounded-md bg-slate-900 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              className="w-full rounded-md bg-gradient-to-r from-blue-600 to-emerald-500 py-2 text-sm font-medium text-white hover:from-blue-700 hover:to-emerald-600 disabled:opacity-50"
             >
               {pending ? "Signing in…" : "Sign in"}
             </button>
@@ -82,7 +94,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="p-8 text-center text-slate-600">Loading…</div>}>
+    <Suspense fallback={<div className="min-h-screen bg-white p-8 text-center text-slate-600">Loading…</div>}>
       <LoginForm />
     </Suspense>
   );

@@ -1,15 +1,16 @@
 import { z } from "zod";
-import { Prisma, Team } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireWorkspaceAccess } from "@/lib/api-auth";
 import { json } from "@/lib/json";
 import { formatCommentLine } from "@/lib/format-comment";
 import { resolveDisplayTimeZone } from "@/lib/display-tz";
 import { assertTopicHandoffIsLatestForMutation } from "@/lib/handoff-policy";
+import { TEAM_VALUES } from "@/lib/team";
 
 const bodySchema = z.object({
   body: z.string().min(1).max(100_000),
-  team: z.enum(["on_shore", "off_shore"]),
+  team: z.enum(TEAM_VALUES),
   clientTimeZone: z.string().optional(),
 });
 
@@ -29,8 +30,6 @@ export async function POST(
     return json({ error: "Invalid body" }, { status: 400 });
   }
 
-  const team = parsed.team === "on_shore" ? Team.on_shore : Team.off_shore;
-
   const userExists = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true },
@@ -48,7 +47,7 @@ export async function POST(
       data: {
         topicId,
         authorId: userId,
-        team,
+        team: parsed.team,
         body: parsed.body,
       },
       include: {

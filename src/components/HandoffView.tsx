@@ -10,6 +10,8 @@ import { pickLatestCommentIdFromRows } from "@/lib/comment-latest";
 import { CollapseChevronIcon } from "@/components/CollapseChevronIcon";
 import { formatDdMmYyyyFromYmd, formatDdMmYyyyInTz, formatHandoffTitle } from "@/lib/date-display";
 import { requestHandoffSidebarListRefresh } from "@/lib/handoff-sidebar-refresh";
+import { buildClipboardHtmlDocument, writeRichHtmlToClipboard } from "@/lib/cf-html-clipboard";
+import { parseTeamValue, teamMailColor, teamSelectLabel, teamTextClass, TEAM_VALUES } from "@/lib/team";
 
 type AttachmentMeta = {
   id: string;
@@ -89,7 +91,8 @@ function compareCreatedDescendingThenOrder(a: TopicRow, b: TopicRow): number {
 }
 
 /** Min px per column when resizing: status, summary, owner, priority, updates, sheet. */
-const HANDOFF_TABLE_COL_MIN = [32, 120, 64, 52, 80, 100] as const;
+const HANDOFF_PRIORITY_COL_MIN_PX = 100;
+const HANDOFF_TABLE_COL_MIN = [32, 120, 64, HANDOFF_PRIORITY_COL_MIN_PX, 80, 100] as const;
 const HANDOFF_TABLE_COL_MAX = 900;
 
 function isComposingInHandoffMain(root: HTMLElement | null): boolean {
@@ -118,8 +121,16 @@ function isComposingInHandoffMain(root: HTMLElement | null): boolean {
   return false;
 }
 
-function teamTextClass(team: Team) {
-  return team === "on_shore" ? "text-blue-700" : "text-orange-700";
+function TeamSelectOptions() {
+  return (
+    <>
+      {TEAM_VALUES.map((value) => (
+        <option key={value} value={value}>
+          {teamSelectLabel(value)}
+        </option>
+      ))}
+    </>
+  );
 }
 
 /** Prepended once to the stored comment when removing escalation via Add update (then user text). */
@@ -520,7 +531,14 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
   const [team, setTeam] = useState<Team>("on_shore");
   const [tableSort, setTableSort] = useState<HandoffTableSort>({ kind: "default" });
   const [collapsedTopicIds, setCollapsedTopicIds] = useState<string[]>([]);
-  const [columnWidths, setColumnWidths] = useState<number[]>([40, 300, 140, 120, 460, 320]);
+  const [columnWidths, setColumnWidths] = useState<number[]>([
+    40,
+    300,
+    140,
+    HANDOFF_PRIORITY_COL_MIN_PX,
+    460,
+    320,
+  ]);
   const resizingRef = useRef<{
     colIndex: number;
     startX: number;
@@ -530,7 +548,8 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
 
   useEffect(() => {
     const t = localStorage.getItem(TEAM_STORAGE);
-    if (t === "on_shore" || t === "off_shore") setTeam(t);
+    const saved = parseTeamValue(t ?? "");
+    if (saved) setTeam(saved);
   }, []);
 
   useEffect(() => {
@@ -952,10 +971,24 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
         </div>
       )}
       <header className="shrink-0 border-b border-slate-300 bg-slate-200/90">
-        <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-3 px-2 py-3 sm:px-3 sm:py-4">
+        <div className="flex items-center justify-between px-2 pt-2 sm:px-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/images/logos/logosmallNew.png"
+            alt="Handoff Hub"
+            className="h-8 w-auto object-contain sm:h-10"
+          />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/images/logos/amdocslogo.png"
+            alt="Amdocs"
+            className="h-8 w-auto sm:h-10"
+          />
+        </div>
+        <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-3 px-2 pb-3 pt-1 sm:px-3 sm:pb-4">
           <div className="min-w-0">
             <h1 className="truncate text-base font-semibold text-slate-900 sm:text-lg">
-              {workspaceName ? `${workspaceName} Handoff` : "Handoff"}
+              {workspaceName || "Handoff"}
             </h1>
             <p className="text-sm text-slate-700 sm:text-base">{displayTitle}</p>
           </div>
@@ -984,8 +1017,7 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
                 onChange={(e) => setTeam(e.target.value as Team)}
                 className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm"
               >
-                <option value="on_shore">On-shore</option>
-                <option value="off_shore">Off-shore</option>
+                <TeamSelectOptions />
               </select>
             </label>
             <button
@@ -1514,17 +1546,33 @@ function handoffMailFirstColumnFaintHex(topic: TopicRow): string {
   return "#f1f5f9";
 }
 
-function handoffMailPriorityTextStyle(topic: TopicRow): string {
-  if (isTopicEscalated(topic) || topic.priority === "high") return "color:#b91c1c;font-weight:bold;";
-  if (topic.priority === "mid") return "color:#ea580c;font-weight:bold;";
-  if (topic.priority === "low") return "color:#1d4ed8;font-weight:bold;";
-  return "color:#334155;font-weight:bold;";
+function mailColoredText(color: string, content: string, bold = false): string {
+  const weight = bold ? "font-weight:bold;" : "";
+  const inner = bold ? `<b>${content}</b>` : content;
+  return (
+    `<span style="color:${color};${weight}mso-color-alt:auto;">` +
+    `<font color="${color}">${inner}</font></span>`
+  );
+}
+
+function handoffMailPriorityHtml(topic: TopicRow): string {
+  const text = escapeHtmlForMail(formatPriorityCell(topic.priority));
+  if (isTopicEscalated(topic) || topic.priority === "high") {
+    return mailColoredText("#B91C1C", text, true);
+  }
+  if (topic.priority === "mid") {
+    return mailColoredText("#EA580C", text, true);
+  }
+  if (topic.priority === "low") {
+    return mailColoredText("#1D4ED8", text, true);
+  }
+  return text;
 }
 
 function handoffMailSummaryHtml(topic: TopicRow): string {
   const raw = escapeHtmlForMail(topic.summary);
   if (isTopicEscalated(topic)) {
-    return `<span style="color:#7f1d1d;font-weight:bold;">ESCALATED - </span>${raw}`;
+    return `${mailColoredText("#7F1D1D", "ESCALATED - ", true)}${raw}`;
   }
   return raw;
 }
@@ -1532,11 +1580,11 @@ function handoffMailSummaryHtml(topic: TopicRow): string {
 function handoffMailUpdatesHtml(topic: TopicRow): string {
   const list = commentsInChronologicalOrder(topic);
   if (list.length === 0) {
-    return '<span style="color:#94a3b8;font-size:12px;">—</span>';
+    return mailColoredText("#94A3B8", "—");
   }
   return list
     .map((c) => {
-      const teamColor = c.team === "on_shore" ? "#1d4ed8" : "#c2410c";
+      const teamColor = teamMailColor(c.team);
       const prefix = escapeHtmlForMail(c.prefix);
       const body = escapeHtmlForMail(c.body).replace(/\n/g, "<br/>");
       const att =
@@ -1545,7 +1593,11 @@ function handoffMailUpdatesHtml(topic: TopicRow): string {
             .map((a) => `<li>${escapeHtmlForMail(a.originalFilename)}</li>`)
             .join("")}</ul>`
           : "";
-      return `<div style="margin-bottom:10px;"><span style="color:${teamColor};font-weight:600;font-size:12px;">${prefix}</span><br/><span style="color:#0f172a;white-space:pre-wrap;font-size:13px;line-height:1.35;">${body}</span>${att}</div>`;
+      return (
+        `<p style="margin:0 0 6pt 0;line-height:1.35;">` +
+        `${mailColoredText(teamColor, `${prefix} `, true)}` +
+        `<span style="color:#0F172A;">${body}</span>${att}</p>`
+      );
     })
     .join("");
 }
@@ -1573,7 +1625,7 @@ function handoffMailSheetHtml(topic: TopicRow): string {
       .join("");
     rows.push(`<tr>${tds}</tr>`);
   }
-  return `<table role="presentation" style="border-collapse:collapse;width:100%;table-layout:fixed;">${rows.join("")}</table>`;
+  return `<table border="1" cellpadding="3" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:11px;">${rows.join("")}</table>`;
 }
 
 function topicSnapshotForCopy(
@@ -1598,41 +1650,18 @@ function topicToMailTableRowHtml(topic: TopicRow): string {
   const td = `border:${border};padding:10px;vertical-align:top;font-size:13px;line-height:1.4;color:#0f172a;background:#ffffff;${op}`;
   const tintBg = handoffMailFirstColumnFaintHex(topic);
   const tdTint = `border:${border};padding:4px 2px;vertical-align:top;background:${tintBg};${op}`;
-  const priStyle = `${td}${handoffMailPriorityTextStyle(topic)}`;
+  const tdPri = `border:${border};padding:10px;vertical-align:top;font-size:13px;line-height:1.4;background:#ffffff;${op}`;
   return `<tr style="background:#ffffff;">
             <td style="${tdTint}">&nbsp;</td>
             <td style="${td}">${handoffMailSummaryHtml(topic)}</td>
             <td style="${td}">${escapeHtmlForMail(topic.owner || "—")}</td>
-            <td style="${priStyle}">${escapeHtmlForMail(formatPriorityCell(topic.priority))}</td>
+            <td style="${tdPri}">${handoffMailPriorityHtml(topic)}</td>
             <td style="${td}">${handoffMailUpdatesHtml(topic)}</td>
             <td style="${td}">${handoffMailSheetHtml(topic)}</td>
           </tr>`;
 }
 
-function handoffTopicsToPlainText(
-  topics: TopicRow[],
-  _titleLine: string,
-  _workspaceName: string | null,
-): string {
-  const lines: string[] = [];
-  for (const t of topics) {
-    lines.push(`• ${t.summary.replace(/\r?\n/g, " ")}`);
-    lines.push(`  Owner: ${t.owner || "-"} | Priority: ${formatPriorityCell(t.priority)}`);
-    for (const c of commentsInChronologicalOrder(t)) {
-      lines.push(`  ${c.prefix} ${c.body.replace(/\r?\n/g, " ")}`);
-    }
-    lines.push("");
-  }
-  if (topics.length === 0) lines.push("(No items for this date.)");
-  return lines.join("\n");
-}
-
-function buildHandoffMailDocumentHtml(
-  _workspaceName: string | null,
-  _dateYmd: string,
-  _titleLine: string,
-  topics: TopicRow[],
-): string {
+function buildHandoffTableHtml(topics: TopicRow[]): string {
   const border = "1px solid #cbd5e1";
   const thStyle = `border:${border};background:#f1f5f9;padding:8px 10px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#475569;`;
   const thead = `<thead><tr>
@@ -1649,55 +1678,35 @@ function buildHandoffMailDocumentHtml(
       : "";
   const bodyRows =
     topics.length === 0 ? emptyBody : topics.map(topicToMailTableRowHtml).join("");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:16px;font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:#fff;color:#0f172a;">
-  <table role="presentation" style="border-collapse:collapse;width:100%;max-width:1200px;table-layout:fixed;border:${border};">${thead}<tbody>${bodyRows}</tbody></table>
-</body></html>`;
+  return `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:1200px;table-layout:fixed;font-family:'Segoe UI',Tahoma,Arial,sans-serif;font-size:12px;color:#0f172a;">${thead}<tbody>${bodyRows}</tbody></table>`;
 }
 
-function buildSingleTopicMailHtml(topic: TopicRow): string {
-  const border = "1px solid #cbd5e1";
-  const thStyle = `border:${border};background:#f1f5f9;padding:8px 10px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#475569;`;
-  const thead = `<thead><tr>
-    <th style="${thStyle}width:3%;" aria-label="Status tint"></th>
-    <th style="${thStyle}width:20%;">Summary</th>
-    <th style="${thStyle}width:10%;">Owner</th>
-    <th style="${thStyle}width:8%;">Priority</th>
-    <th style="${thStyle}width:31%;">Updates</th>
-    <th style="${thStyle}width:28%;">Sheet</th>
-  </tr></thead>`;
-  const row = topicToMailTableRowHtml(topic);
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:16px;font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:#fff;color:#0f172a;">
-  <table role="presentation" style="border-collapse:collapse;width:100%;max-width:1200px;table-layout:fixed;border:${border};">${thead}<tbody>${row}</tbody></table>
-</body></html>`;
+function handoffTopicsToPlainFallback(topics: TopicRow[]): string {
+  const lines: string[] = [];
+  for (const t of topics) {
+    lines.push(`${t.summary.replace(/\r?\n/g, " ")}`);
+    lines.push(`Owner: ${t.owner || "—"} | Priority: ${formatPriorityCell(t.priority)}`);
+    for (const c of commentsInChronologicalOrder(t)) {
+      lines.push(`${c.prefix} ${c.body.replace(/\r?\n/g, " ")}`);
+    }
+    lines.push("");
+  }
+  if (topics.length === 0) lines.push("(No items for this date.)");
+  return lines.join("\n").replace(/\n+$/, "");
 }
 
 async function copyTopicRowToClipboard(topic: TopicRow, onNotice: (msg: string | null) => void): Promise<void> {
-  const htmlDoc = buildSingleTopicMailHtml(topic);
-  const plain = handoffTopicsToPlainText([topic], "", null).replace(/\n+$/, "");
-  try {
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "text/html": new Blob([htmlDoc], { type: "text/html" }),
-        "text/plain": new Blob([plain], { type: "text/plain" }),
-      }),
-    ]);
+  const tableHtml = buildHandoffTableHtml([topic]);
+  const cleanHtml = buildClipboardHtmlDocument(tableHtml);
+  const plain = handoffTopicsToPlainFallback([topic]);
+  const ok = await writeRichHtmlToClipboard(cleanHtml, plain, tableHtml);
+  if (ok) {
     onNotice("Row copied to clipboard.");
     window.setTimeout(() => onNotice(null), 3000);
     return;
-  } catch {
-    /* Fallback for browsers that deny/skip rich ClipboardItem writes. */
   }
-
-  try {
-    await navigator.clipboard.writeText(plain);
-    onNotice("Row copied as plain text.");
-    window.setTimeout(() => onNotice(null), 3000);
-  } catch {
-    onNotice("Could not copy to clipboard. Check browser clipboard permissions.");
-    window.setTimeout(() => onNotice(null), 6000);
-  }
+  onNotice("Could not copy to clipboard. Check browser clipboard permissions.");
+  window.setTimeout(() => onNotice(null), 6000);
 }
 
 async function copyPlainTextToClipboard(
@@ -1723,36 +1732,20 @@ async function copyHandoffToClipboard(opts: {
 }): Promise<void> {
   const { workspaceName, dateYmd, titleLine, topics, latestUpdateOnly, onNotice } = opts;
   const topicsToCopy = latestUpdateOnly ? topics.map(topicWithLatestCommentOnly) : topics;
-  const htmlDoc = buildHandoffMailDocumentHtml(workspaceName, dateYmd, titleLine, topicsToCopy);
-  const plain = handoffTopicsToPlainText(topicsToCopy, titleLine, workspaceName);
+  const tableHtml = buildHandoffTableHtml(topicsToCopy);
+  const cleanHtml = buildClipboardHtmlDocument(tableHtml);
+  const plain = handoffTopicsToPlainFallback(topicsToCopy);
   const successNotice = latestUpdateOnly
     ? "Handoff copied (latest update per item only)."
     : "Handoff copied to clipboard.";
-  const plainNotice = latestUpdateOnly
-    ? "Handoff copied as plain text (latest update per item only)."
-    : "Handoff copied as plain text.";
-  try {
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "text/html": new Blob([htmlDoc], { type: "text/html" }),
-        "text/plain": new Blob([plain], { type: "text/plain" }),
-      }),
-    ]);
+  const ok = await writeRichHtmlToClipboard(cleanHtml, plain, tableHtml);
+  if (ok) {
     onNotice(successNotice);
     window.setTimeout(() => onNotice(null), 3000);
     return;
-  } catch {
-    /* Fallback for browsers that deny/skip rich ClipboardItem writes. */
   }
-
-  try {
-    await navigator.clipboard.writeText(plain);
-    onNotice(plainNotice);
-    window.setTimeout(() => onNotice(null), 3000);
-  } catch {
-    onNotice("Could not copy to clipboard. Check browser clipboard permissions.");
-    window.setTimeout(() => onNotice(null), 6000);
-  }
+  onNotice("Could not copy to clipboard. Check browser clipboard permissions.");
+  window.setTimeout(() => onNotice(null), 6000);
 }
 
 function TopicRowTable({
@@ -1935,14 +1928,16 @@ function TopicRowTable({
       <td className="border border-slate-300 bg-white px-2 py-3">
         {editing ? (
           topic.priority === "escalated" ? (
-            <div className={`rounded px-2 py-1 text-sm font-bold ${priorityLabelTextClass(topic)}`}>
+            <div
+              className={`whitespace-nowrap rounded px-2 py-1 text-sm font-bold ${priorityLabelTextClass(topic)}`}
+            >
               Escalated
             </div>
           ) : (
             <select
               value={editPriority}
               onChange={(e) => setEditPriority(e.target.value as Priority | "")}
-              className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              className="w-full min-w-[6.5rem] rounded border border-slate-300 px-2 py-1 text-sm"
             >
               <option value="">None</option>
               <option value="low">Low</option>
@@ -1951,12 +1946,14 @@ function TopicRowTable({
             </select>
           )
         ) : (
-          <div className={`rounded px-2 py-1 font-bold ${priorityLabelTextClass(topic)}`}>
+          <div
+            className={`whitespace-nowrap rounded px-2 py-1 text-sm font-bold ${priorityLabelTextClass(topic)}`}
+          >
             {formatPriorityCell(topic.priority)}
           </div>
         )}
       </td>
-      <td className="border border-slate-300 bg-white px-3 py-3 align-top">
+      <td className="border border-slate-300 bg-white px-2 py-2 align-top">
         {!collapsed && (
           <TopicUpdatesColumn
             api={api}
@@ -1972,7 +1969,7 @@ function TopicRowTable({
           />
         )}
       </td>
-      <td className="border border-slate-300 bg-white px-2 py-3 align-top">
+      <td className="border border-slate-300 bg-white px-2 py-2 align-top">
         {!collapsed && (
           <TopicSheetColumn
             topic={topic}
@@ -2241,8 +2238,8 @@ function TopicSheetColumn({
 
   if (!draft) {
     return (
-      <div className="space-y-2">
-        <p className="text-xs text-slate-600">No sheet</p>
+      <div className="space-y-1">
+        <p className="text-[11px] text-slate-600">No sheet</p>
         <button
           type="button"
           disabled={!editable}
@@ -2251,7 +2248,7 @@ function TopicSheetColumn({
             setEditing(true);
             setSheetVisible(true);
           }}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
           Add Sheet
         </button>
@@ -2260,19 +2257,19 @@ function TopicSheetColumn({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-1">
         <button
           type="button"
           onClick={() => setSheetVisible((v) => !v)}
           title={sheetVisible ? "Hide sheet" : "Show sheet"}
           aria-label={sheetVisible ? "Hide sheet" : "Show sheet"}
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-900 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+          className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-900 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
         >
-          <CollapseChevronIcon expanded={sheetVisible} className="h-5 w-5" />
+          <CollapseChevronIcon expanded={sheetVisible} className="h-4 w-4" />
         </button>
         {!sheetVisible && (
-          <span className="text-xs text-slate-500">
+          <span className="text-[11px] text-slate-500">
             {draft.cols}×{draft.rows} (hidden)
           </span>
         )}
@@ -2281,18 +2278,18 @@ function TopicSheetColumn({
       {sheetVisible && (
         <>
           {!editing ? (
-            <div className="space-y-2">
-              <div className="max-w-full overflow-auto rounded border border-slate-200 bg-white p-1">
-                <table className="border-collapse text-xs">
+            <div className="space-y-1">
+              <div className="max-w-full overflow-auto rounded border border-slate-200 bg-white p-0.5">
+                <table className="border-collapse text-[11px] leading-tight">
                   <tbody>
                     {draft.cells.map((row, r) => (
                       <tr key={`preview-r-${r}`}>
                         {row.map((cell, c) => (
                           <td
                             key={`preview-c-${c}`}
-                            className={`min-w-16 border px-1 py-1 ${r === 0
-                              ? "border-slate-300 bg-slate-100 text-left text-[11px] font-semibold text-slate-800"
-                              : "border-slate-200"
+                            className={`min-w-12 border px-0.5 py-0.5 ${r === 0
+                              ? "border-slate-300 bg-slate-100 text-left text-[10px] font-semibold text-slate-800"
+                              : "border-slate-200 text-[11px] text-slate-800"
                               }`}
                           >
                             <span
@@ -2307,12 +2304,12 @@ function TopicSheetColumn({
                   </tbody>
                 </table>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1">
                 <button
                   type="button"
                   disabled={!editable}
                   onClick={() => setEditing(true)}
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                 >
                   Edit Sheet
                 </button>
@@ -2330,7 +2327,7 @@ function TopicSheetColumn({
                       setDraft(null);
                       void onSave(null);
                     }}
-                    className="rounded-md border border-red-300 bg-white px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                    className="rounded border border-red-300 bg-white px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-50"
                   >
                     Remove
                   </button>
@@ -2338,14 +2335,14 @@ function TopicSheetColumn({
               </div>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-1">
               <SheetEditor value={draft} onChange={setDraft} disabled={!editable || saving} />
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1">
                 <button
                   type="button"
                   onClick={() => void handleSave()}
                   disabled={!editable || saving}
-                  className="rounded-md bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+                  className="rounded bg-slate-900 px-1.5 py-0.5 text-[11px] text-white disabled:opacity-50"
                 >
                   {saving ? "Saving..." : "Save sheet"}
                 </button>
@@ -2356,7 +2353,7 @@ function TopicSheetColumn({
                     setDraft(normalizeSheetData(topic.sheetData));
                     setEditing(false);
                   }}
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                  className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700"
                 >
                   Cancel
                 </button>
@@ -2394,7 +2391,7 @@ function SheetEditor({
         maxLen = Math.max(maxLen, line.length);
       }
     }
-    return Math.max(10, Math.min(44, maxLen + 2));
+    return Math.max(8, Math.min(36, maxLen + 2));
   }) ?? [];
 
   function setCell(
@@ -2461,13 +2458,13 @@ function SheetEditor({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-1">
         <button
           type="button"
           onClick={addCol}
           disabled={disabled || value.cols >= MAX_SHEET_COLS}
-          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
         >
           + Col
         </button>
@@ -2475,7 +2472,7 @@ function SheetEditor({
           type="button"
           onClick={removeCol}
           disabled={disabled || value.cols <= 1}
-          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
         >
           - Col
         </button>
@@ -2483,7 +2480,7 @@ function SheetEditor({
           type="button"
           onClick={addRow}
           disabled={disabled || value.rows >= MAX_SHEET_ROWS}
-          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
         >
           + Row
         </button>
@@ -2491,20 +2488,20 @@ function SheetEditor({
           type="button"
           onClick={removeRow}
           disabled={disabled || value.rows <= 1}
-          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+          className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
         >
           - Row
         </button>
       </div>
-      <div className="max-w-full overflow-auto rounded border border-slate-200 bg-white p-1">
-        <table className="border-collapse text-xs">
+      <div className="max-w-full overflow-auto rounded border border-slate-200 bg-white p-0.5">
+        <table className="border-collapse text-[11px] leading-tight">
           <tbody>
             {value.cells.map((row, r) => (
               <tr key={`r-${r}`}>
                 {row.map((cell, c) => (
                   <td
                     key={`c-${c}`}
-                    className={`border p-1 align-top ${r === 0 ? "border-slate-300 bg-slate-100" : "border-slate-300"
+                    className={`border p-0.5 align-top ${r === 0 ? "border-slate-300 bg-slate-100" : "border-slate-300"
                       }`}
                     style={{ width: `${colWidths[c]}ch` }}
                   >
@@ -2514,7 +2511,7 @@ function SheetEditor({
                         inputRefs.current[cellKey(r, c)] = el;
                       }}
                       disabled={disabled}
-                      rows={Math.min(12, Math.max(2, (cell.text.match(/\n/g)?.length ?? 0) + 2))}
+                      rows={Math.min(8, Math.max(1, (cell.text.match(/\n/g)?.length ?? 0) + 1))}
                       onChange={(e) =>
                         setCell(r, c, (current) => ({
                           ...current,
@@ -2572,7 +2569,7 @@ function SheetEditor({
                           return;
                         }
                       }}
-                      className="w-full min-h-[2.5rem] resize-y rounded border border-slate-200 px-1 py-1 text-xs leading-snug"
+                      className="w-full min-h-[1.5rem] resize-y rounded border border-slate-200 px-0.5 py-0.5 text-[11px] leading-tight"
                     />
                   </td>
                 ))}
@@ -2581,7 +2578,7 @@ function SheetEditor({
           </tbody>
         </table>
       </div>
-      <p className="text-[11px] text-slate-500">
+      <p className="text-[10px] leading-snug text-slate-500">
         Limits: up to {MAX_SHEET_COLS} columns and {MAX_SHEET_ROWS} rows. Press Enter for a new line in a cell (like
         Excel Alt+Enter). Ctrl+Enter moves to the row below; Ctrl+Arrow moves between cells; Tab moves to the next cell.
         Paste from Excel/Sheets supports multi-line cells. Extra rows/columns are added up to the limit.
@@ -2618,7 +2615,7 @@ function TopicUpdatesColumn({
   const [showPostForm, setShowPostForm] = useState(false);
 
   return (
-    <div className="min-w-0 space-y-3">
+    <div className="min-w-0 space-y-1">
       {orderedComments.map((c) => (
         <CommentBlock
           key={c.id}
@@ -2782,8 +2779,7 @@ function CommentBlock({
             onChange={(e) => setEditTeam(e.target.value as Team)}
             className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
           >
-            <option value="on_shore">On-shore</option>
-            <option value="off_shore">Off-shore</option>
+            <TeamSelectOptions />
           </select>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -2833,13 +2829,15 @@ function CommentBlock({
   }
 
   return (
-    <div className="rounded-md border border-slate-100 bg-slate-50/80 px-2 py-2">
-      <p className={`text-sm font-semibold ${teamTextClass(comment.team)}`}>{comment.prefix}</p>
-      <p className="mt-0.5 whitespace-pre-wrap text-sm text-slate-800">
-        {renderTextWithLinks(comment.body, focusedSearchTerm)}
+    <div className="rounded border border-slate-100 bg-slate-50/80 px-1.5 py-1">
+      <p className="text-xs leading-snug text-slate-800">
+        <span className={`font-semibold ${teamTextClass(comment.team)}`}>{comment.prefix} </span>
+        <span className="font-normal whitespace-pre-wrap">
+          {renderTextWithLinks(comment.body, focusedSearchTerm)}
+        </span>
       </p>
       {comment.attachments.length > 0 && (
-        <ul className="mt-2 list-inside list-disc text-xs text-slate-600">
+        <ul className="mt-1 list-inside list-disc text-[11px] text-slate-600">
           {comment.attachments.map((a) => (
             <li key={a.id}>
               <a
@@ -2859,7 +2857,7 @@ function CommentBlock({
         <button
           type="button"
           onClick={() => setEditing(true)}
-          className="mt-2 text-xs font-medium text-slate-700 underline hover:text-slate-900"
+          className="mt-0.5 text-[11px] font-medium text-slate-700 underline hover:text-slate-900"
         >
           Edit update
         </button>
@@ -2975,7 +2973,7 @@ function PostUpdateForm({
     }
   }
 
-  const teamAria = team === "on_shore" ? "on-shore" : "off-shore";
+  const teamAria = teamSelectLabel(team);
 
   return (
     <form
@@ -2987,7 +2985,7 @@ function PostUpdateForm({
       aria-label={`Post update as ${teamAria} team`}
     >
       <p className="text-xs font-medium text-slate-600">
-        Add update — {team === "on_shore" ? "On-shore" : "Off-shore"} (use Team selector in header)
+        Add update — {teamSelectLabel(team)} (use Team selector in header)
       </p>
       <p className="text-xs text-slate-500">
         Today in your location ({clientDisplayTz}):{" "}
