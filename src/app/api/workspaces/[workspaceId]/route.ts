@@ -2,9 +2,11 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/api-auth";
 import { json } from "@/lib/json";
+import { normalizeMailTo } from "@/lib/mail-recipients";
 
 const patchSchema = z.object({
-  name: z.string().min(1).max(200).trim(),
+  name: z.string().min(1).max(200).trim().optional(),
+  mailTo: z.string().max(2000).nullable().optional(),
 });
 
 export async function PATCH(
@@ -24,11 +26,22 @@ export async function PATCH(
   } catch {
     return json({ error: "Invalid body" }, { status: 400 });
   }
+  if (body.name === undefined && body.mailTo === undefined) {
+    return json({ error: "Nothing to update" }, { status: 400 });
+  }
+
+  const data: { name?: string; mailTo?: string | null } = {};
+  if (body.name !== undefined) data.name = body.name;
+  if (body.mailTo !== undefined) {
+    const mail = normalizeMailTo(body.mailTo);
+    if (!mail.ok) return json({ error: mail.error }, { status: 400 });
+    data.mailTo = mail.value;
+  }
 
   const ws = await prisma.workspace.update({
     where: { id: workspaceId },
-    data: { name: body.name },
-    select: { id: true, name: true, sortOrder: true },
+    data,
+    select: { id: true, name: true, sortOrder: true, mailTo: true },
   });
 
   return json({ workspace: ws });

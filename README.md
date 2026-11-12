@@ -4,6 +4,7 @@ Web app for daily onshore/offshore handoffs: **workspaces** (Chrome-style tabs: 
 
 ## Architecture and flow
 
+- See [`docs/USAGE.md`](docs/USAGE.md) for **short end-user usage instructions** (sign-in, workspaces, daily handoff, search, admin).
 - See [`docs/APPLICATION-FLOW.md`](docs/APPLICATION-FLOW.md) for the **application flow diagram** (sign-in through handoff actions).
 - See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for component architecture, data flow diagrams, storage model, and functionality write-up.
 - See [`docs/PERFORCE.md`](docs/PERFORCE.md) for Perforce ignore rules and post-sync setup.

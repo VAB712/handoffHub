@@ -1,10 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import { requireWorkspaceAccess } from "@/lib/api-auth";
-import { readAttachmentStream, resolveStorageAbsolutePath } from "@/lib/attachments-fs";
-import { existsSync } from "fs";
+import { readAttachmentBytes, toStoredBytes } from "@/lib/attachments-fs";
 import { json } from "@/lib/json";
-import { Readable } from "node:stream";
 import { topicBelongsToWorkspace } from "@/lib/handoff-policy";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function contentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_") || "attachment";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
 
 export async function GET(
   _req: Request,
@@ -16,24 +22,42 @@ export async function GET(
 
   const att = await prisma.attachment.findUnique({
     where: { id },
-    include: { comment: { select: { topicId: true } } },
+    select: {
+      originalFilename: true,
+      mimeType: true,
+      storagePath: true,
+      content: true,
+      comment: { select: { topicId: true } },
+    },
   });
   if (!att) return json({ error: "Not found" }, { status: 404 });
 
   const ok = await topicBelongsToWorkspace(att.comment.topicId, workspaceId);
   if (!ok) return json({ error: "Not found" }, { status: 404 });
 
-  const abs = resolveStorageAbsolutePath(att.storagePath);
-  if (!existsSync(abs)) return json({ error: "File missing" }, { status: 404 });
+  const stored = toStoredBytes(att.content);
+  let fromDisk: Buffer | null = null;
+  if (!stored) {
+    try {
+      fromDisk = await readAttachmentBytes(att.storagePath);
+    } catch {
+      fromDisk = null;
+    }
+  }
+  const bytes = stored ?? fromDisk;
+  if (!bytes) {
+    return json({ error: "File missing. Upload it again on this update." }, { status: 404 });
+  }
 
-  const nodeStream = readAttachmentStream(att.storagePath);
-  const webStream = Readable.toWeb(nodeStream);
-  const safeName = encodeURIComponent(att.originalFilename);
+  const body = new Uint8Array(bytes.byteLength);
+  body.set(bytes);
 
-  return new Response(webStream as unknown as ReadableStream, {
+  return new Response(body, {
     headers: {
-      "Content-Type": att.mimeType,
-      "Content-Disposition": `attachment; filename*=UTF-8''${safeName}`,
+      "Content-Type": att.mimeType || "application/octet-stream",
+      "Content-Disposition": contentDisposition(att.originalFilename),
+      "Content-Length": String(body.byteLength),
+      "Cache-Control": "private, no-store",
     },
   });
 }

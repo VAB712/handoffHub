@@ -74,7 +74,14 @@ export async function GET(
               comments: {
                 orderBy: { createdAt: "asc" },
                 include: {
-                  attachments: true,
+                  attachments: {
+                    select: {
+                      id: true,
+                      originalFilename: true,
+                      mimeType: true,
+                      sizeBytes: true,
+                    },
+                  },
                   author: { select: { id: true, name: true, email: true } },
                 },
               },

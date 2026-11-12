@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
@@ -94,6 +94,10 @@ function compareCreatedDescendingThenOrder(a: TopicRow, b: TopicRow): number {
 const HANDOFF_PRIORITY_COL_MIN_PX = 100;
 const HANDOFF_TABLE_COL_MIN = [32, 120, 64, HANDOFF_PRIORITY_COL_MIN_PX, 80, 100] as const;
 const HANDOFF_TABLE_COL_MAX = 900;
+/** Sheet column when at least one item has a sheet. */
+const SHEET_COL_WIDE = 320;
+/** Sheet column when the handoff has no sheets, so Updates can use the space. */
+const SHEET_COL_NARROW = 112;
 
 function isComposingInHandoffMain(root: HTMLElement | null): boolean {
   if (!root) return false;
@@ -515,8 +519,11 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [addHoBusy, setAddHoBusy] = useState(false);
+  const [mailBusy, setMailBusy] = useState(false);
   const [deleteHoBusy, setDeleteHoBusy] = useState(false);
   const [searchText, setSearchText] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchHadFocus = useRef(false);
   const [activeSearch, setActiveSearch] = useState("");
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -537,14 +544,33 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
     140,
     HANDOFF_PRIORITY_COL_MIN_PX,
     460,
-    320,
+    SHEET_COL_WIDE,
   ]);
+  const [localSheetTopicIds, setLocalSheetTopicIds] = useState<string[]>([]);
+  const sheetLayoutRef = useRef<"unknown" | "wide" | "narrow">("unknown");
   const resizingRef = useRef<{
     colIndex: number;
     startX: number;
     startWidths: number[];
   } | null>(null);
   const handoffMainRef = useRef<HTMLElement | null>(null);
+  const [actionBarWidth, setActionBarWidth] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const main = handoffMainRef.current;
+    if (!main) return;
+    const measure = () => {
+      const inner = main.firstElementChild as HTMLElement | null;
+      const pad = inner
+        ? parseFloat(getComputedStyle(inner).paddingLeft) + parseFloat(getComputedStyle(inner).paddingRight)
+        : 0;
+      setActionBarWidth(Math.max(0, main.clientWidth - (Number.isFinite(pad) ? pad : 0)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(main);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const t = localStorage.getItem(TEAM_STORAGE);
@@ -598,6 +624,49 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
     };
   }, []);
 
+  const handoffHasSheet =
+    (loading && topics.length === 0) ||
+    localSheetTopicIds.length > 0 ||
+    topics.some((topic) => normalizeSheetData(topic.sheetData) != null);
+
+  useEffect(() => {
+    setLocalSheetTopicIds([]);
+    sheetLayoutRef.current = "unknown";
+  }, [workspaceId, date]);
+
+  useEffect(() => {
+    const mode = handoffHasSheet ? "wide" : "narrow";
+    if (sheetLayoutRef.current === mode) return;
+    const previous = sheetLayoutRef.current;
+    sheetLayoutRef.current = mode;
+    if (previous === "unknown" && mode === "wide") return;
+    setColumnWidths((widths) => {
+      const next = [...widths];
+      if (mode === "narrow") {
+        const freed = Math.max(0, next[5] - SHEET_COL_NARROW);
+        next[5] = SHEET_COL_NARROW;
+        next[4] += freed;
+        return next;
+      }
+      const need = Math.max(0, SHEET_COL_WIDE - next[5]);
+      const canTake = Math.max(0, next[4] - HANDOFF_TABLE_COL_MIN[4]);
+      const take = Math.min(need, canTake);
+      next[4] -= take;
+      next[5] += take;
+      if (next[5] < SHEET_COL_WIDE) next[5] = SHEET_COL_WIDE;
+      return next;
+    });
+  }, [handoffHasSheet]);
+
+  const setTopicSheetDraft = useCallback((topicId: string, active: boolean) => {
+    setLocalSheetTopicIds((prev) => {
+      const has = prev.includes(topicId);
+      if (active && !has) return [...prev, topicId];
+      if (!active && has) return prev.filter((id) => id !== topicId);
+      return prev;
+    });
+  }, []);
+
   function startColumnResize(colIndex: number, e: React.MouseEvent<HTMLDivElement>) {
     e.preventDefault();
     resizingRef.current = {
@@ -647,7 +716,6 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
         typeof data.latestHandoffDate === "string" ? data.latestHandoffDate : null,
       );
       setTopics(data.topics ?? []);
-      if (silent) setError(null);
     } catch (e) {
       if (!silent) setError(e instanceof Error ? e.message : "Error");
     } finally {
@@ -804,6 +872,19 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
     }, 350);
     return () => window.clearTimeout(handle);
   }, [searchText, runSearch]);
+
+  useLayoutEffect(() => {
+    const el = searchInputRef.current;
+    if (!el || !searchHadFocus.current) return;
+    if (document.activeElement === el) return;
+    const pos = el.value.length;
+    el.focus();
+    try {
+      el.setSelectionRange(pos, pos);
+    } catch {
+      /* ignore */
+    }
+  }, [searchText, searchBusy, searchResults, searchError, activeSearch]);
 
   async function onAddRow(e: React.FormEvent) {
     e.preventDefault();
@@ -963,6 +1044,31 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
     }, 80);
   }, [focusedTopicId, topics]);
 
+  async function onMailHandoff() {
+    setMailBusy(true);
+    setError(null);
+    try {
+      const html = buildHandoffTableHtml(orderedTopics, orderedTopics.some(topicHasSheet));
+      const text = handoffTopicsToPlainFallback(orderedTopics);
+      const res = await fetch(`${api}/mail`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ handoffDate: date, html, text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Could not send mail");
+      }
+      setNotice(typeof data.message === "string" ? data.message : "Handoff mailed.");
+      window.setTimeout(() => setNotice(null), 4000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send mail");
+    } finally {
+      setMailBusy(false);
+    }
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {notice && (
@@ -1000,13 +1106,20 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
             className="order-3 w-full sm:order-2 sm:max-w-md lg:order-none lg:flex-1 lg:px-4"
           >
             <input
-              type="search"
+              ref={searchInputRef}
+              type="text"
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
-              disabled={searchBusy}
+              onFocus={() => {
+                searchHadFocus.current = true;
+              }}
+              onBlur={(e) => {
+                if (e.relatedTarget) searchHadFocus.current = false;
+              }}
               placeholder="Search"
               aria-label="Search handoff"
-              className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm disabled:opacity-60"
+              autoComplete="off"
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm"
             />
           </form>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -1195,6 +1308,118 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
             <p className="text-slate-600">Loading…</p>
           ) : (
             <>
+              <div
+                className="sticky left-0 z-10 mb-2"
+                style={actionBarWidth != null ? { width: actionBarWidth } : undefined}
+              >
+                {!canMutateThisHandoff && (
+                  <p className="mb-2 text-sm text-amber-800">
+                    Only the latest handoff can be edited. Open the most recent handoff date to make changes.
+                  </p>
+                )}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    {!addingRow && (
+                      <button
+                        type="button"
+                        onClick={() => setAddingRow(true)}
+                        disabled={!canMutateThisHandoff}
+                        aria-label="Add row"
+                        title="Add row"
+                        className="inline-flex h-[2.625rem] w-[2.625rem] items-center justify-center rounded text-slate-700 hover:bg-slate-200 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                          className="h-6 w-6"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                        >
+                          <path d="M12 5v14M5 12h14" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void onMailHandoff()}
+                    disabled={mailBusy}
+                    aria-label={mailBusy ? "Sending mail" : "Mail"}
+                    title={mailBusy ? "Sending…" : "Email this handoff to every address on this workspace"}
+                    className="inline-flex h-[2.625rem] w-[2.625rem] shrink-0 items-center justify-center rounded text-slate-700 hover:bg-slate-200 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      className="h-6 w-6"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="5" width="18" height="14" rx="2" />
+                      <path d="m3 7 9 7 9-7" />
+                    </svg>
+                  </button>
+                </div>
+                {addingRow && (
+                  <form
+                    onSubmit={onAddRow}
+                    className="mt-3 max-w-xl space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+                  >
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600">Summary</label>
+                      <textarea
+                        required
+                        rows={2}
+                        value={newSummary}
+                        onChange={(e) => setNewSummary(e.target.value)}
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600">Owner (optional)</label>
+                      <input
+                        value={newOwner}
+                        onChange={(e) => setNewOwner(e.target.value)}
+                        placeholder="Leave blank if not set"
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600">Priority</label>
+                      <select
+                        value={newPriority}
+                        onChange={(e) => setNewPriority(e.target.value as Priority | "")}
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                      >
+                        <option value="">None</option>
+                        <option value="low">Low</option>
+                        <option value="mid">Mid</option>
+                        <option value="high">High</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="submit"
+                        className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
+                      >
+                        Save row
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAddingRow(false)}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
               <div className="hidden min-w-0 md:block">
                 <div className="max-w-full rounded-lg border border-slate-300 bg-white shadow-sm">
                   <table className="table-fixed min-w-[1200px] w-full border-collapse text-left text-sm">
@@ -1322,6 +1547,7 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
                           onNotice={setNotice}
                           onSave={(s, owner, p) => void saveTopic(t.id, s, owner, p)}
                           onSaveSheet={(sheet) => void saveTopicSheet(t.id, sheet)}
+                          onSheetDraft={(active) => setTopicSheetDraft(t.id, active)}
                           onRefresh={() => void load({ silent: true })}
                         />
                       ))}
@@ -1355,76 +1581,6 @@ export function HandoffView({ workspaceId, date }: { workspaceId: string; date: 
             </>
           )}
 
-          <div className="mt-6">
-            {!canMutateThisHandoff && (
-              <p className="mb-3 text-sm text-amber-800">
-                Only the latest handoff can be edited. Open the most recent handoff date to make changes.
-              </p>
-            )}
-            {!addingRow ? (
-              <button
-                type="button"
-                onClick={() => setAddingRow(true)}
-                disabled={!canMutateThisHandoff}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Add row
-              </button>
-            ) : (
-              <form
-                onSubmit={onAddRow}
-                className="max-w-xl space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
-              >
-                <div>
-                  <label className="block text-xs font-medium text-slate-600">Summary</label>
-                  <textarea
-                    required
-                    rows={2}
-                    value={newSummary}
-                    onChange={(e) => setNewSummary(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600">Owner (optional)</label>
-                  <input
-                    value={newOwner}
-                    onChange={(e) => setNewOwner(e.target.value)}
-                    placeholder="Leave blank if not set"
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600">Priority</label>
-                  <select
-                    value={newPriority}
-                    onChange={(e) => setNewPriority(e.target.value as Priority | "")}
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-                  >
-                    <option value="">None</option>
-                    <option value="low">Low</option>
-                    <option value="mid">Mid</option>
-                    <option value="high">High</option>
-                  </select>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="submit"
-                    className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
-                  >
-                    Save row
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAddingRow(false)}
-                    className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
         </div>
       </main>
     </div>
@@ -1644,40 +1800,48 @@ function topicSnapshotForCopy(
   };
 }
 
-function topicToMailTableRowHtml(topic: TopicRow): string {
+function topicHasSheet(topic: TopicRow): boolean {
+  return normalizeSheetData(topic.sheetData) != null;
+}
+
+function topicToMailTableRowHtml(topic: TopicRow, includeSheet = true): string {
   const border = "1px solid #cbd5e1";
   const op = topic.isClosed ? "opacity:0.78;" : "";
   const td = `border:${border};padding:10px;vertical-align:top;font-size:13px;line-height:1.4;color:#0f172a;background:#ffffff;${op}`;
   const tintBg = handoffMailFirstColumnFaintHex(topic);
   const tdTint = `border:${border};padding:4px 2px;vertical-align:top;background:${tintBg};${op}`;
   const tdPri = `border:${border};padding:10px;vertical-align:top;font-size:13px;line-height:1.4;background:#ffffff;${op}`;
+  const sheetCell = includeSheet ? `<td style="${td}">${handoffMailSheetHtml(topic)}</td>` : "";
   return `<tr style="background:#ffffff;">
             <td style="${tdTint}">&nbsp;</td>
             <td style="${td}">${handoffMailSummaryHtml(topic)}</td>
             <td style="${td}">${escapeHtmlForMail(topic.owner || "—")}</td>
             <td style="${tdPri}">${handoffMailPriorityHtml(topic)}</td>
             <td style="${td}">${handoffMailUpdatesHtml(topic)}</td>
-            <td style="${td}">${handoffMailSheetHtml(topic)}</td>
+            ${sheetCell}
           </tr>`;
 }
 
-function buildHandoffTableHtml(topics: TopicRow[]): string {
+function buildHandoffTableHtml(topics: TopicRow[], includeSheet = true): string {
   const border = "1px solid #cbd5e1";
   const thStyle = `border:${border};background:#f1f5f9;padding:8px 10px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#475569;`;
+  const updatesWidth = includeSheet ? "31%" : "59%";
+  const sheetHeader = includeSheet ? `<th style="${thStyle}width:28%;">Sheet</th>` : "";
+  const columnCount = includeSheet ? 6 : 5;
   const thead = `<thead><tr>
     <th style="${thStyle}width:3%;" aria-label="Status tint"></th>
     <th style="${thStyle}width:20%;">Summary</th>
     <th style="${thStyle}width:10%;">Owner</th>
     <th style="${thStyle}width:8%;">Priority</th>
-    <th style="${thStyle}width:31%;">Updates</th>
-    <th style="${thStyle}width:28%;">Sheet</th>
+    <th style="${thStyle}width:${updatesWidth};">Updates</th>
+    ${sheetHeader}
   </tr></thead>`;
   const emptyBody =
     topics.length === 0
-      ? `<tr><td colspan="6" style="border:${border};padding:14px;color:#64748b;font-size:13px;">No items for this handoff date.</td></tr>`
+      ? `<tr><td colspan="${columnCount}" style="border:${border};padding:14px;color:#64748b;font-size:13px;">No items for this handoff date.</td></tr>`
       : "";
   const bodyRows =
-    topics.length === 0 ? emptyBody : topics.map(topicToMailTableRowHtml).join("");
+    topics.length === 0 ? emptyBody : topics.map((topic) => topicToMailTableRowHtml(topic, includeSheet)).join("");
   return `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:1200px;table-layout:fixed;font-family:'Segoe UI',Tahoma,Arial,sans-serif;font-size:12px;color:#0f172a;">${thead}<tbody>${bodyRows}</tbody></table>`;
 }
 
@@ -1732,7 +1896,8 @@ async function copyHandoffToClipboard(opts: {
 }): Promise<void> {
   const { workspaceName, dateYmd, titleLine, topics, latestUpdateOnly, onNotice } = opts;
   const topicsToCopy = latestUpdateOnly ? topics.map(topicWithLatestCommentOnly) : topics;
-  const tableHtml = buildHandoffTableHtml(topicsToCopy);
+  const includeSheet = topicsToCopy.some(topicHasSheet);
+  const tableHtml = buildHandoffTableHtml(topicsToCopy, includeSheet);
   const cleanHtml = buildClipboardHtmlDocument(tableHtml);
   const plain = handoffTopicsToPlainFallback(topicsToCopy);
   const successNotice = latestUpdateOnly
@@ -1763,6 +1928,7 @@ function TopicRowTable({
   onNotice,
   onSave,
   onSaveSheet,
+  onSheetDraft,
   onRefresh,
 }: {
   api: string;
@@ -1779,6 +1945,7 @@ function TopicRowTable({
   onNotice: (msg: string | null) => void;
   onSave: (summary: string, owner: string, priority: Priority | "") => void;
   onSaveSheet: (sheetData: TopicSheetData | null) => void;
+  onSheetDraft?: (active: boolean) => void;
   onRefresh: () => void;
 }) {
   const [editSum, setEditSum] = useState(topic.summary);
@@ -1954,20 +2121,20 @@ function TopicRowTable({
         )}
       </td>
       <td className="border border-slate-300 bg-white px-2 py-2 align-top">
-        {!collapsed && (
-          <TopicUpdatesColumn
-            api={api}
-            topic={topic}
-            selectedTeam={selectedTeam}
-            userId={userId}
-            userTeam={userTeam}
-            clientDisplayTz={clientDisplayTz}
-            canMutateHandoff={canMutateHandoff}
-            isClosed={topic.isClosed}
-            focusedSearchTerm={focusedSearchTerm}
-            onRefresh={onRefresh}
-          />
-        )}
+        <TopicUpdatesColumn
+          api={api}
+          topic={topic}
+          selectedTeam={selectedTeam}
+          userId={userId}
+          userTeam={userTeam}
+          clientDisplayTz={clientDisplayTz}
+          canMutateHandoff={canMutateHandoff}
+          isClosed={topic.isClosed}
+          focusedSearchTerm={focusedSearchTerm}
+          collapsed={collapsed}
+          onExpand={onToggleCollapsed}
+          onRefresh={onRefresh}
+        />
       </td>
       <td className="border border-slate-300 bg-white px-2 py-2 align-top">
         {!collapsed && (
@@ -1976,6 +2143,7 @@ function TopicRowTable({
             canMutateHandoff={canMutateHandoff}
             focusedSearchTerm={focusedSearchTerm}
             onSave={onSaveSheet}
+            onDraftActive={onSheetDraft}
           />
         )}
       </td>
@@ -2131,32 +2299,32 @@ function TopicCard({
           )}
         </div>
       </div>
+      <div className="mt-3 border-t border-slate-100 pt-3">
+        <TopicUpdatesColumn
+          api={api}
+          topic={topic}
+          selectedTeam={selectedTeam}
+          userId={userId}
+          userTeam={userTeam}
+          clientDisplayTz={clientDisplayTz}
+          canMutateHandoff={canMutateHandoff}
+          isClosed={topic.isClosed}
+          focusedSearchTerm={focusedSearchTerm}
+          collapsed={collapsed}
+          onExpand={onToggleCollapsed}
+          onRefresh={onRefresh}
+        />
+      </div>
       {!collapsed && (
-        <>
-          <div className="mt-3 border-t border-slate-100 pt-3">
-            <TopicUpdatesColumn
-              api={api}
-              topic={topic}
-              selectedTeam={selectedTeam}
-              userId={userId}
-              userTeam={userTeam}
-              clientDisplayTz={clientDisplayTz}
-              canMutateHandoff={canMutateHandoff}
-              isClosed={topic.isClosed}
-              focusedSearchTerm={focusedSearchTerm}
-              onRefresh={onRefresh}
-            />
-          </div>
-          <div className="mt-3 border-t border-slate-100 pt-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">Sheet</p>
-            <TopicSheetColumn
-              topic={topic}
-              canMutateHandoff={canMutateHandoff}
-              focusedSearchTerm={focusedSearchTerm}
-              onSave={onSaveSheet}
-            />
-          </div>
-        </>
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">Sheet</p>
+          <TopicSheetColumn
+            topic={topic}
+            canMutateHandoff={canMutateHandoff}
+            focusedSearchTerm={focusedSearchTerm}
+            onSave={onSaveSheet}
+          />
+        </div>
       )}
       <div className="mt-2 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
         {editing ? (
@@ -2209,11 +2377,13 @@ function TopicSheetColumn({
   canMutateHandoff,
   focusedSearchTerm,
   onSave,
+  onDraftActive,
 }: {
   topic: TopicRow;
   canMutateHandoff: boolean;
   focusedSearchTerm: string | null;
   onSave: (sheetData: TopicSheetData | null) => void;
+  onDraftActive?: (active: boolean) => void;
 }) {
   const [sheetVisible, setSheetVisible] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -2225,6 +2395,17 @@ function TopicSheetColumn({
     setDraft(normalizeSheetData(topic.sheetData));
     setEditing(false);
   }, [topic.sheetData]);
+
+  const draftActiveRef = useRef(onDraftActive);
+  draftActiveRef.current = onDraftActive;
+
+  useEffect(() => {
+    draftActiveRef.current?.(draft != null);
+  }, [draft]);
+
+  useEffect(() => {
+    return () => draftActiveRef.current?.(false);
+  }, []);
 
   async function handleSave() {
     setSaving(true);
@@ -2597,6 +2778,8 @@ function TopicUpdatesColumn({
   canMutateHandoff,
   isClosed,
   focusedSearchTerm,
+  collapsed,
+  onExpand,
   onRefresh,
 }: {
   api: string;
@@ -2608,15 +2791,30 @@ function TopicUpdatesColumn({
   canMutateHandoff: boolean;
   isClosed: boolean;
   focusedSearchTerm: string | null;
+  collapsed: boolean;
+  onExpand: () => void;
   onRefresh: () => void;
 }) {
   const orderedComments = commentsInChronologicalOrder(topic);
   const latestCommentId = pickLatestCommentIdFromRows(topic.comments);
+  const visibleComments = collapsed
+    ? orderedComments.filter((c) => c.id === latestCommentId)
+    : orderedComments;
+  const hasOlderComments = collapsed && orderedComments.length > visibleComments.length;
   const [showPostForm, setShowPostForm] = useState(false);
 
   return (
     <div className="min-w-0 space-y-1">
-      {orderedComments.map((c) => (
+      {hasOlderComments && (
+        <button
+          type="button"
+          onClick={onExpand}
+          className="text-xs font-medium text-blue-700 underline hover:text-blue-900"
+        >
+          See more
+        </button>
+      )}
+      {visibleComments.map((c) => (
         <CommentBlock
           key={c.id}
           api={api}
@@ -2658,6 +2856,59 @@ function TopicUpdatesColumn({
   );
 }
 
+async function uploadCommentFiles(api: string, commentId: string, files: File[]) {
+  for (const f of files) {
+    const fd = new FormData();
+    fd.set("file", f);
+    const up = await fetch(`${api}/comments/${commentId}/attachments`, {
+      method: "POST",
+      body: fd,
+      credentials: "include",
+    });
+    if (!up.ok) {
+      const data = await up.json().catch(() => ({}));
+      throw new Error(typeof data.error === "string" ? data.error : `Upload failed: ${f.name}`);
+    }
+  }
+}
+
+function AttachmentDownloadButton({ api, attachment }: { api: string; attachment: AttachmentMeta }) {
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    setBusy(true);
+    try {
+      const res = await fetch(`${api}/attachments/${attachment.id}`, { credentials: "include" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.error === "string" ? data.error : "Could not download file");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = attachment.originalFilename || "attachment";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "Could not download file");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => void download()}
+      disabled={busy}
+      className="text-left text-blue-700 underline hover:text-blue-900 disabled:opacity-50"
+    >
+      {busy ? "Downloading…" : attachment.originalFilename}
+    </button>
+  );
+}
+
 function CommentBlock({
   api,
   topicId,
@@ -2691,6 +2942,7 @@ function CommentBlock({
   const [editing, setEditing] = useState(false);
   const [editBody, setEditBody] = useState(comment.body);
   const [editTeam, setEditTeam] = useState<Team>(comment.team);
+  const [editFiles, setEditFiles] = useState<File[]>([]);
 
   useEffect(() => {
     setEditBody(comment.body);
@@ -2721,6 +2973,10 @@ function CommentBlock({
         body: JSON.stringify({ body: editBody.trim(), team: editTeam, clientTimeZone: clientDisplayTz }),
       });
       if (!res.ok) throw new Error("Could not save");
+      if (editFiles.length > 0) {
+        await uploadCommentFiles(api, comment.id, editFiles);
+        setEditFiles([]);
+      }
       if (markDone) {
         const close = await fetch(`${api}/topics/${topicId}/close`, {
           method: "PATCH",
@@ -2782,6 +3038,17 @@ function CommentBlock({
             <TeamSelectOptions />
           </select>
         </div>
+        <div>
+          <input
+            type="file"
+            multiple
+            onChange={(e) => setEditFiles(e.target.files ? Array.from(e.target.files) : [])}
+            className="text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1"
+          />
+          {editFiles.length > 0 && (
+            <p className="mt-1 text-[11px] text-slate-500">{editFiles.map((f) => f.name).join(", ")}</p>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="submit"
@@ -2837,18 +3104,10 @@ function CommentBlock({
         </span>
       </p>
       {comment.attachments.length > 0 && (
-        <ul className="mt-1 list-inside list-disc text-[11px] text-slate-600">
+        <ul className="mt-1 space-y-0.5 text-[11px] text-slate-600">
           {comment.attachments.map((a) => (
             <li key={a.id}>
-              <a
-                href={`${api}/attachments/${a.id}`}
-                className="text-blue-600 underline hover:text-blue-800"
-                target="_blank"
-                rel="noreferrer"
-              >
-                {a.originalFilename}
-              </a>
-              <span className="text-slate-400"> ({a.sizeBytes} bytes)</span>
+              <AttachmentDownloadButton api={api} attachment={a} />
             </li>
           ))}
         </ul>
@@ -2886,7 +3145,7 @@ function PostUpdateForm({
   onRefresh: () => void;
 }) {
   const [text, setText] = useState("");
-  const [files, setFiles] = useState<FileList | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -2921,16 +3180,8 @@ function PostUpdateForm({
       }
       const data = await res.json();
       const commentId: string = data.comment.id;
-      const list = files ? Array.from(files) : [];
-      for (const f of list) {
-        const fd = new FormData();
-        fd.set("file", f);
-        const up = await fetch(`${api}/comments/${commentId}/attachments`, {
-          method: "POST",
-          body: fd,
-          credentials: "include",
-        });
-        if (!up.ok) throw new Error(`Upload failed: ${f.name}`);
+      if (files.length > 0) {
+        await uploadCommentFiles(api, commentId, files);
       }
       if (action === "markDone") {
         const close = await fetch(`${api}/topics/${topicId}/close`, {
@@ -2963,7 +3214,7 @@ function PostUpdateForm({
         }
       }
       setText("");
-      setFiles(null);
+      setFiles([]);
       onCancel();
       onRefresh();
     } catch (err) {
@@ -3006,9 +3257,14 @@ function PostUpdateForm({
         <input
           type="file"
           multiple
-          onChange={(e) => setFiles(e.target.files)}
+          onChange={(e) => setFiles(e.target.files ? Array.from(e.target.files) : [])}
           className="text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1"
         />
+        <p className="mt-1 text-[11px] text-slate-500">
+          {files.length > 0
+            ? files.map((f) => f.name).join(", ")
+            : "You can attach more than one file. Click a name to download it."}
+        </p>
       </div>
       <button
         type="submit"

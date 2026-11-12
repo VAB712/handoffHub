@@ -36,12 +36,32 @@ model User {
 model Workspace {
   id          String       @id @default(cuid())
   name        String
+  /// Distribution list or mailbox addresses, comma-separated. Null on existing workspaces until edited.
+  mailTo      String?      @map("mail_to") @db.Text
   sortOrder   Int          @default(0) @map("sort_order")
   createdAt   DateTime     @default(now()) @map("created_at")
   handoffDays HandoffDay[]
   userAccesses UserWorkspaceAccess[]
+  mailSchedules MailSchedule[]
 
   @@map("Workspace")
+}
+
+/// Daily send of the latest handoff to the workspace mail / DL. Clock time is local to timeZone.
+model MailSchedule {
+  id          String    @id @default(cuid())
+  workspaceId String    @map("workspace_id")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  hour        Int
+  minute      Int
+  timeZone    String    @map("time_zone")
+  /// YYYY-MM-DD in timeZone for the last successful send. Stops a second send the same local day.
+  lastSentOn  String?   @map("last_sent_on")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@map("mail_schedules")
 }
 
 model UserWorkspaceAccess {
@@ -114,6 +134,8 @@ model Attachment {
   originalFilename String   @map("original_filename")
   mimeType         String   @map("mime_type")
   sizeBytes        BigInt   @map("size_bytes")
+  /// File bytes downloaded by the browser. Null only for older files that exist on disk.
+  content          Bytes?   @db.ByteA
   createdAt        DateTime @default(now()) @map("created_at")
   comment          Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
 

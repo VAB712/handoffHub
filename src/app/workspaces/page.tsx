@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
 import { signOut } from "next-auth/react";
+import { ScheduleMailDialog } from "@/components/ScheduleMailDialog";
+import { WorkspaceNameMailDialog } from "@/components/WorkspaceNameMailDialog";
 
-type Ws = { id: string; name: string; sortOrder: number };
+type Ws = { id: string; name: string; sortOrder: number; mailTo?: string | null };
 type AccessLevel = "admin" | "workspace";
 function localTodayYmd(): string {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -42,6 +44,10 @@ export default function WorkspacesPage() {
   const [bulkErr, setBulkErr] = useState<string | null>(null);
   const [bulkFailedRows, setBulkFailedRows] = useState<Array<{ row: number; userId: string; error: string }>>([]);
   const [removeWsBusyId, setRemoveWsBusyId] = useState<string | null>(null);
+  const [editor, setEditor] = useState<null | { id?: string; name: string; mailTo: string }>(null);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [editorErr, setEditorErr] = useState<string | null>(null);
+  const [scheduleWsId, setScheduleWsId] = useState<string | null>(null);
   const isAdmin = session?.user?.isAdmin ?? false;
 
   const load = useCallback(async () => {
@@ -71,20 +77,40 @@ export default function WorkspacesPage() {
     router.replace(`/w/${encodeURIComponent(list[0]!.id)}/handoff/${ymd}`);
   }, [status, isAdmin, redirected, list, router]);
 
-  async function addWorkspace() {
-    const name = window.prompt("New workspace name");
-    if (!name?.trim()) return;
-    const res = await fetch("/api/workspaces", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
-    });
-    if (!res.ok) {
-      window.alert("Could not add (admin only).");
-      return;
+  function openAddWorkspace() {
+    setEditorErr(null);
+    setEditor({ name: "", mailTo: "" });
+  }
+
+  function openEditWorkspace(ws: Ws) {
+    setEditorErr(null);
+    setEditor({ id: ws.id, name: ws.name, mailTo: ws.mailTo ?? "" });
+  }
+
+  async function saveWorkspace(mailTo: string) {
+    if (!editor?.name.trim()) return;
+    setEditorBusy(true);
+    setEditorErr(null);
+    try {
+      const res = await fetch(
+        editor.id ? `/api/workspaces/${encodeURIComponent(editor.id)}` : "/api/workspaces",
+        {
+          method: editor.id ? "PATCH" : "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: editor.name.trim(), mailTo: mailTo.trim() }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditorErr(typeof data.error === "string" ? data.error : "Could not save workspace.");
+        return;
+      }
+      setEditor(null);
+      await load();
+    } finally {
+      setEditorBusy(false);
     }
-    await load();
   }
 
   function openWorkspace(id: string) {
@@ -213,9 +239,18 @@ export default function WorkspacesPage() {
         credentials: "include",
         body: fd,
       });
-      const data = await res.json().catch(() => ({}));
+      const raw = await res.text();
+      let data: { error?: unknown; created?: number; failed?: number; results?: unknown } = {};
+      if (raw) {
+        try {
+          data = JSON.parse(raw) as typeof data;
+        } catch {
+          setBulkErr(raw.slice(0, 300) || `Bulk upload failed (${res.status}).`);
+          return;
+        }
+      }
       if (!res.ok) {
-        setBulkErr(typeof data.error === "string" ? data.error : "Bulk upload failed.");
+        setBulkErr(typeof data.error === "string" ? data.error : `Bulk upload failed (${res.status}).`);
         return;
       }
       const failedRows = Array.isArray(data.results)
@@ -280,8 +315,20 @@ export default function WorkspacesPage() {
               onClick={() => openWorkspace(w.id)}
               className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-4 py-3 text-left text-sm font-medium text-slate-900 shadow-sm hover:border-emerald-300 hover:bg-emerald-50/50"
             >
-              {w.name}
+              <span className="block">{w.name}</span>
+              <span className="mt-0.5 block break-words text-xs font-normal text-slate-500">
+                {w.mailTo ? `Mail: ${w.mailTo}` : "No mail / DL yet"}
+              </span>
             </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => openEditWorkspace(w)}
+                className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-3 text-xs font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+              >
+                Edit
+              </button>
+            )}
             {isAdmin && (
               <button
                 type="button"
@@ -304,7 +351,7 @@ export default function WorkspacesPage() {
       {isAdmin && (
         <button
           type="button"
-          onClick={() => void addWorkspace()}
+          onClick={openAddWorkspace}
           className="mt-6 w-full rounded-lg border border-dashed border-slate-400 bg-white py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
         >
           + Add workspace
@@ -537,6 +584,27 @@ export default function WorkspacesPage() {
           </>
         )}
       </div>
+      {editor && (
+        <WorkspaceNameMailDialog
+          title={editor.id ? "Edit workspace" : "Add workspace"}
+          name={editor.name}
+          mailTo={editor.mailTo}
+          busy={editorBusy}
+          error={editorErr}
+          submitLabel={editor.id ? "Save" : "Add workspace"}
+          onNameChange={(value) => setEditor((prev) => (prev ? { ...prev, name: value } : prev))}
+          onMailChange={(value) => setEditor((prev) => (prev ? { ...prev, mailTo: value } : prev))}
+          onCancel={() => setEditor(null)}
+          onSubmit={(mailTo) => void saveWorkspace(mailTo)}
+          onScheduleMail={editor.id ? () => setScheduleWsId(editor.id ?? null) : undefined}
+        />
+      )}
+      {scheduleWsId && (
+        <ScheduleMailDialog
+          api={`/api/workspaces/${encodeURIComponent(scheduleWsId)}`}
+          onClose={() => setScheduleWsId(null)}
+        />
+      )}
     </main>
   );
 }

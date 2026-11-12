@@ -40,7 +40,9 @@ export async function PATCH(
     where: { id: commentId },
     include: {
       author: { select: { name: true, email: true } },
-      attachments: true,
+      attachments: {
+        select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true },
+      },
     },
   });
   if (!comment) return json({ error: "Not found" }, { status: 404 });
@@ -67,7 +69,9 @@ export async function PATCH(
     },
     include: {
       author: { select: { name: true, email: true } },
-      attachments: true,
+      attachments: {
+        select: { id: true, originalFilename: true, mimeType: true, sizeBytes: true },
+      },
     },
   });
 

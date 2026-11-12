@@ -72,7 +72,17 @@ export async function POST(
             include: {
               comments: {
                 orderBy: { createdAt: "asc" },
-                include: { attachments: true },
+                include: {
+                  attachments: {
+                    select: {
+                      storagePath: true,
+                      originalFilename: true,
+                      mimeType: true,
+                      sizeBytes: true,
+                      content: true,
+                    },
+                  },
+                },
               },
             },
           },
@@ -126,7 +136,7 @@ export async function POST(
       }
     }
     return day;
-  });
+  }, { timeout: 120_000, maxWait: 10_000 });
 
   return json({
     ok: true,

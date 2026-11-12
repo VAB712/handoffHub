@@ -1,17 +1,15 @@
 import bcrypt from "bcryptjs";
-import * as XLSX from "xlsx";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/api-auth";
 import { json } from "@/lib/json";
+import { buildUsersTemplate, parseUsersSheet } from "@/lib/bulk-users-sheet";
 
-function isTruthyCell(v: unknown): boolean {
-  if (typeof v === "number") return v === 1;
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") {
-    const s = v.trim().toLowerCase();
-    return s === "1" || s === "true" || s === "yes" || s === "y";
-  }
-  return false;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function normName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, "_");
 }
 
 export async function GET() {
@@ -23,14 +21,9 @@ export async function GET() {
     select: { id: true, name: true },
   });
 
-  const headers = ["user_id", "contact_email", "password", "is_admin", ...workspaces.map((w) => w.name)];
-  const sample = ["new.user", "", "Password@123", 0, ...workspaces.map(() => 0)];
-  const sheet = XLSX.utils.aoa_to_sheet([headers, sample]);
-  const book = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(book, sheet, "users");
-  const output = XLSX.write(book, { type: "buffer", bookType: "xlsx" });
+  const output = buildUsersTemplate(workspaces.map((w) => w.name));
 
-  return new Response(output, {
+  return new Response(Buffer.from(output), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": 'attachment; filename="handoff-hub-users-template.xlsx"',
@@ -45,88 +38,85 @@ export async function POST(req: Request) {
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
-  if (!(file instanceof File)) {
-    return json({ error: "Upload an Excel file under field name 'file'." }, { status: 400 });
+  if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
+    return json({ error: "Upload an Excel file (.xlsx) from the template." }, { status: 400 });
   }
 
-  const ab = await file.arrayBuffer();
-  const wb = XLSX.read(Buffer.from(ab), { type: "buffer" });
-  const first = wb.SheetNames[0];
-  if (!first) return json({ error: "Excel file is empty." }, { status: 400 });
-  const ws = wb.Sheets[first];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
-  if (rows.length === 0) return json({ error: "No rows found in sheet." }, { status: 400 });
+  let rows;
+  try {
+    rows = parseUsersSheet(await file.arrayBuffer());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not read the Excel file.";
+    return json({ error: message }, { status: 400 });
+  }
 
   const workspaces = await prisma.workspace.findMany({
     orderBy: { sortOrder: "asc" },
     select: { id: true, name: true },
   });
-  const workspaceByLowerName = new Map(workspaces.map((w) => [w.name.trim().toLowerCase(), w.id]));
-  const RESERVED_KEYS = new Set(["user_id", "contact_email", "password", "is_admin"]);
+  const workspaceByKey = new Map(workspaces.map((w) => [normName(w.name), w.id]));
 
   const results: Array<{ row: number; userId: string; ok: boolean; error?: string }> = [];
   let created = 0;
 
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i] ?? {};
-    const rowNum = i + 2;
-    const userIdRaw = String(r.user_id ?? "").trim().toLowerCase();
-    const passwordRaw = String(r.password ?? "");
-    const isAdmin = isTruthyCell(r.is_admin);
-    const contactEmailRaw = String(r.contact_email ?? "").trim().toLowerCase();
-    let contactEmail: string | null = null;
-    if (contactEmailRaw) {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmailRaw)) {
-        results.push({ row: rowNum, userId: userIdRaw, ok: false, error: "contact_email is invalid" });
-        continue;
-      }
-      contactEmail = contactEmailRaw;
-    }
-
+  for (const row of rows) {
+    const userIdRaw = row.userId;
     if (!userIdRaw) {
-      results.push({ row: rowNum, userId: "", ok: false, error: "user_id is required" });
+      results.push({ row: row.row, userId: "", ok: false, error: "user_id is required" });
       continue;
     }
-    if (!passwordRaw || passwordRaw.length < 6) {
-      results.push({ row: rowNum, userId: userIdRaw, ok: false, error: "password must be at least 6 characters" });
+    if (!row.password || row.password.length < 6) {
+      results.push({
+        row: row.row,
+        userId: userIdRaw,
+        ok: false,
+        error: "password must be at least 6 characters",
+      });
+      continue;
+    }
+    if (row.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.contactEmail)) {
+      results.push({ row: row.row, userId: userIdRaw, ok: false, error: "contact_email is invalid" });
       continue;
     }
 
     const selectedWorkspaceIds: string[] = [];
-    if (!isAdmin) {
-      for (const [key, val] of Object.entries(r)) {
-        const lower = key.trim().toLowerCase();
-        if (RESERVED_KEYS.has(lower)) continue;
-        const wsId = workspaceByLowerName.get(lower);
-        if (!wsId) continue;
-        if (isTruthyCell(val)) selectedWorkspaceIds.push(wsId);
+    if (!row.isAdmin) {
+      for (const [key, selected] of row.workspaceFlags) {
+        if (!selected) continue;
+        const wsId = workspaceByKey.get(key);
+        if (wsId) selectedWorkspaceIds.push(wsId);
       }
       if (selectedWorkspaceIds.length === 0) {
-        results.push({ row: rowNum, userId: userIdRaw, ok: false, error: "select at least one workspace (put 1)" });
+        results.push({
+          row: row.row,
+          userId: userIdRaw,
+          ok: false,
+          error: "select at least one workspace (put 1 under the workspace column)",
+        });
         continue;
       }
     }
 
     try {
-      if (contactEmail) {
+      if (row.contactEmail) {
         const takenCe = await prisma.user.findFirst({
-          where: { contactEmail },
+          where: { contactEmail: row.contactEmail },
           select: { id: true },
         });
         if (takenCe) {
-          results.push({ row: rowNum, userId: userIdRaw, ok: false, error: "contact_email already in use" });
+          results.push({ row: row.row, userId: userIdRaw, ok: false, error: "contact_email already in use" });
           continue;
         }
       }
 
-      const passwordHash = await bcrypt.hash(passwordRaw, 12);
+      const passwordHash = await bcrypt.hash(row.password, 12);
       await prisma.user.create({
         data: {
           email: userIdRaw,
-          contactEmail,
+          contactEmail: row.contactEmail,
           passwordHash,
-          isAdmin,
-          workspaceAccesses: isAdmin
+          isAdmin: row.isAdmin,
+          workspaceAccesses: row.isAdmin
             ? undefined
             : {
                 create: [...new Set(selectedWorkspaceIds)].map((workspaceId) => ({ workspaceId })),
@@ -134,9 +124,16 @@ export async function POST(req: Request) {
         },
       });
       created += 1;
-      results.push({ row: rowNum, userId: userIdRaw, ok: true });
-    } catch {
-      results.push({ row: rowNum, userId: userIdRaw, ok: false, error: "user already exists or invalid row" });
+      results.push({ row: row.row, userId: userIdRaw, ok: true });
+    } catch (err) {
+      const duplicate =
+        err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+      results.push({
+        row: row.row,
+        userId: userIdRaw,
+        ok: false,
+        error: duplicate ? "user_id or contact_email already exists" : "user already exists or invalid row",
+      });
     }
   }
 

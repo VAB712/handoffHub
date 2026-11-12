@@ -4,8 +4,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
+import { WorkspaceNameMailDialog } from "@/components/WorkspaceNameMailDialog";
 
-type Ws = { id: string; name: string; sortOrder: number };
+type Ws = { id: string; name: string; sortOrder: number; mailTo?: string | null };
 
 function localTodayYmd(): string {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -23,6 +24,9 @@ export function WorkspaceTabBar({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
   const { data: session } = useSession();
   const isAdmin = session?.user?.isAdmin ?? false;
+  const [editor, setEditor] = useState<null | { id?: string; name: string; mailTo: string }>(null);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [editorErr, setEditorErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/workspaces", { credentials: "include" });
@@ -39,38 +43,45 @@ export function WorkspaceTabBar({ workspaceId }: { workspaceId: string }) {
   const dateMatch = pathname?.match(/\/handoff\/(\d{4}-\d{2}-\d{2})/);
   const currentDate = dateMatch?.[1] ?? localTodayYmd();
 
-  async function addTab() {
-    const name = window.prompt("New workspace tab name");
-    if (!name?.trim()) return;
-    const res = await fetch("/api/workspaces", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
-    });
-    if (!res.ok) {
-      window.alert("Could not add workspace (admin only).");
-      return;
-    }
-    const d = await res.json();
-    await load();
-    router.push(`/w/${encodeURIComponent(d.workspace.id)}/handoff/${currentDate}`);
+  function openAdd() {
+    setEditorErr(null);
+    setEditor({ name: "", mailTo: "" });
   }
 
-  async function renameTab(id: string, currentName: string) {
-    const name = window.prompt("Rename workspace tab", currentName);
-    if (!name?.trim()) return;
-    const res = await fetch(`/api/workspaces/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
-    });
-    if (!res.ok) {
-      window.alert("Could not rename.");
-      return;
+  function openEdit(ws: Ws) {
+    setEditorErr(null);
+    setEditor({ id: ws.id, name: ws.name, mailTo: ws.mailTo ?? "" });
+  }
+
+  async function saveWorkspace(mailTo: string) {
+    if (!editor?.name.trim()) return;
+    setEditorBusy(true);
+    setEditorErr(null);
+    try {
+      const payload = { name: editor.name.trim(), mailTo: mailTo.trim() };
+      const res = await fetch(
+        editor.id ? `/api/workspaces/${encodeURIComponent(editor.id)}` : "/api/workspaces",
+        {
+          method: editor.id ? "PATCH" : "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditorErr(typeof data.error === "string" ? data.error : "Could not save workspace.");
+        return;
+      }
+      const savedId = editor.id ?? data.workspace?.id;
+      setEditor(null);
+      await load();
+      if (!editor.id && savedId) {
+        router.push(`/w/${encodeURIComponent(savedId)}/handoff/${currentDate}`);
+      }
+    } finally {
+      setEditorBusy(false);
     }
-    await load();
   }
 
   return (
@@ -96,8 +107,8 @@ export function WorkspaceTabBar({ workspaceId }: { workspaceId: string }) {
               {isAdmin && (
                 <button
                   type="button"
-                  title="Rename"
-                  onClick={() => void renameTab(w.id, w.name)}
+                  title="Edit name and mail"
+                  onClick={() => openEdit(w)}
                   className="border-l border-slate-200 px-1.5 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                 >
                   ✎
@@ -109,7 +120,7 @@ export function WorkspaceTabBar({ workspaceId }: { workspaceId: string }) {
         {isAdmin && (
           <button
             type="button"
-            onClick={() => void addTab()}
+            onClick={openAdd}
             title="Add workspace tab"
             className="mb-1 rounded-md border border-dashed border-slate-400 bg-white/80 px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-white"
           >
@@ -117,6 +128,20 @@ export function WorkspaceTabBar({ workspaceId }: { workspaceId: string }) {
           </button>
         )}
       </div>
+      {editor && (
+        <WorkspaceNameMailDialog
+          title={editor.id ? "Edit workspace" : "Add workspace"}
+          name={editor.name}
+          mailTo={editor.mailTo}
+          busy={editorBusy}
+          error={editorErr}
+          submitLabel={editor.id ? "Save" : "Add workspace"}
+          onNameChange={(value) => setEditor((prev) => (prev ? { ...prev, name: value } : prev))}
+          onMailChange={(value) => setEditor((prev) => (prev ? { ...prev, mailTo: value } : prev))}
+          onCancel={() => setEditor(null)}
+          onSubmit={(mailTo) => void saveWorkspace(mailTo)}
+        />
+      )}
     </div>
   );
 }

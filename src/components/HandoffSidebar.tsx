@@ -60,10 +60,12 @@ function SidebarHandoffDateInput({
   workspaceId,
   ymd,
   className,
+  onPicked,
 }: {
   workspaceId: string;
   ymd: string;
   className?: string;
+  onPicked?: () => void;
 }) {
   const router = useRouter();
   const nativePickerRef = useRef<HTMLInputElement>(null);
@@ -74,6 +76,7 @@ function SidebarHandoffDateInput({
   }, [ymd]);
 
   function goTo(nextYmd: string) {
+    onPicked?.();
     router.push(`/w/${encodeURIComponent(workspaceId)}/handoff/${nextYmd}`);
   }
 
@@ -146,10 +149,12 @@ export function HandoffSidebar({
   workspaceId,
   collapsed,
   onToggleCollapsed,
+  onCollapse,
 }: {
   workspaceId: string;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  onCollapse: () => void;
 }) {
   const pathname = usePathname();
   const current =
@@ -194,18 +199,6 @@ export function HandoffSidebar({
     setOpenMonths((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
-  if (handoffs.length === 0) {
-    return (
-      <aside className="shrink-0 border-slate-200 bg-white p-3 text-sm text-slate-500 lg:w-72 lg:border-r">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="font-medium text-slate-700">Date</p>
-          {current && <SidebarHandoffDateInput workspaceId={workspaceId} ymd={current} />}
-        </div>
-        <p className="mt-1 text-xs">No saved handoffs yet.</p>
-      </aside>
-    );
-  }
-
   const nav = (
     <nav className="space-y-2" aria-label="Handoffs by month">
       {monthKeys.map((key) => {
@@ -230,6 +223,10 @@ export function HandoffSidebar({
                   <li key={ymd}>
                     <Link
                       href={`/w/${encodeURIComponent(workspaceId)}/handoff/${ymd}`}
+                      onClick={() => {
+                        onCollapse();
+                        setMobileDatesOpen(false);
+                      }}
                       className={`block rounded px-2 py-1.5 text-sm ${current === ymd
                           ? "bg-emerald-100 font-medium text-emerald-900"
                           : "text-slate-700 hover:bg-slate-50"
@@ -247,6 +244,10 @@ export function HandoffSidebar({
     </nav>
   );
 
+  const asideWidth = collapsed
+    ? "lg:w-10 lg:min-w-10 lg:max-w-10"
+    : "lg:w-72 lg:min-w-72 lg:max-w-72";
+
   return (
     <>
       <div className="border-b border-slate-200 bg-white p-3 lg:hidden">
@@ -262,6 +263,7 @@ export function HandoffSidebar({
                   <SidebarHandoffDateInput
                     workspaceId={workspaceId}
                     ymd={current}
+                    onPicked={() => setMobileDatesOpen(false)}
                     className="max-w-[10rem] rounded-md border border-slate-300 bg-white px-1 py-0.5 text-xs text-slate-800"
                   />
                 )}
@@ -271,32 +273,64 @@ export function HandoffSidebar({
               </span>
             </span>
           </summary>
-          <div className="mt-2 max-h-[50vh] overflow-y-auto pr-1">{nav}</div>
+          <div className="mt-2 max-h-[50vh] overflow-y-auto pr-1">
+            {handoffs.length === 0 ? (
+              <p className="text-xs text-slate-500">No saved handoffs yet.</p>
+            ) : (
+              nav
+            )}
+          </div>
         </details>
       </div>
       <aside
-        className={`hidden shrink-0 border-slate-200 bg-white transition-all lg:flex lg:flex-col lg:border-r ${collapsed ? "lg:w-8 lg:p-1" : "lg:w-72 lg:p-3"
-          }`}
+        className={`hidden shrink-0 overflow-hidden border-slate-200 bg-white transition-[width] duration-300 ease-in-out lg:flex lg:flex-col lg:border-r ${asideWidth}`}
       >
-        <div
-          className={`mb-2 flex min-w-0 items-center gap-2 ${collapsed ? "justify-end" : ""}`}
-        >
-          {!collapsed && <p className="shrink-0 text-sm font-semibold text-slate-800">Date</p>}
-          {!collapsed && <span className="min-w-0 flex-1" aria-hidden="true" />}
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {!collapsed && current && <SidebarHandoffDateInput workspaceId={workspaceId} ymd={current} />}
-            <button
-              type="button"
-              onClick={onToggleCollapsed}
-              className="inline-flex shrink-0 items-center justify-center rounded border border-slate-800 p-0.5 text-slate-900 hover:bg-slate-100"
-              title={collapsed ? "Expand dates panel" : "Collapse dates panel"}
-              aria-label={collapsed ? "Expand dates panel" : "Collapse dates panel"}
-            >
-              <HandoffPanelChevronIcon collapsed={collapsed} className="h-5 w-5" />
-            </button>
-          </div>
-        </div>
-        {!collapsed && <div className="min-h-0 flex-1 overflow-y-auto pr-1">{nav}</div>}
+        {collapsed ? (
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="flex h-full min-h-[12rem] w-full flex-col items-center gap-3 py-3 text-slate-700 hover:bg-slate-50"
+            title="Open dates"
+            aria-label="Open dates"
+          >
+            <HandoffPanelChevronIcon collapsed className="h-5 w-5" />
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-600 [writing-mode:vertical-rl]">
+              Dates
+            </span>
+          </button>
+        ) : (
+          <>
+            <div className="mb-2 flex min-w-0 items-center gap-2 p-3 pb-0">
+              <p className="shrink-0 text-sm font-semibold text-slate-800">Date</p>
+              <span className="min-w-0 flex-1" aria-hidden="true" />
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                {current && (
+                  <SidebarHandoffDateInput
+                    workspaceId={workspaceId}
+                    ymd={current}
+                    onPicked={onCollapse}
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={onToggleCollapsed}
+                  className="inline-flex shrink-0 items-center justify-center rounded border border-slate-800 p-0.5 text-slate-900 hover:bg-slate-100"
+                  title="Collapse dates panel"
+                  aria-label="Collapse dates panel"
+                >
+                  <HandoffPanelChevronIcon collapsed={false} className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3 pt-2">
+              {handoffs.length === 0 ? (
+                <p className="text-xs text-slate-500">No saved handoffs yet.</p>
+              ) : (
+                nav
+              )}
+            </div>
+          </>
+        )}
       </aside>
     </>
   );

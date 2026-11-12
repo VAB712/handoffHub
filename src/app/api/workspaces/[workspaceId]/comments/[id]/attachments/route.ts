@@ -1,9 +1,13 @@
+import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { requireWorkspaceAccess } from "@/lib/api-auth";
 import { json } from "@/lib/json";
 import { assertCommentEditAllowed } from "@/lib/handoff-policy";
-import { saveUploadedFile, ensureAttachmentsRoot } from "@/lib/attachments-fs";
+import { saveUploadedFile } from "@/lib/attachments-fs";
 import { getMaxUploadBytes } from "@/lib/env";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(
   req: Request,
@@ -12,8 +16,6 @@ export async function POST(
   const { workspaceId, id: commentId } = await ctx.params;
   const access = await requireWorkspaceAccess(workspaceId);
   if ("error" in access) return json({ error: access.error }, { status: access.status });
-
-  ensureAttachmentsRoot();
 
   const comment = await prisma.comment.findUnique({
     where: { id: commentId },
@@ -29,9 +31,9 @@ export async function POST(
     return json({ error: "Expected multipart/form-data" }, { status: 400 });
   }
 
-  const form = await req.formData();
-  const file = form.get("file");
-  if (!(file instanceof File)) {
+  const form = await req.formData().catch(() => null);
+  const file = form?.get("file");
+  if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
     return json({ error: "Missing file field" }, { status: 400 });
   }
   if (file.size > maxBytes) {
@@ -39,15 +41,25 @@ export async function POST(
   }
 
   const buf = Buffer.from(await file.arrayBuffer());
-  const { storagePath } = await saveUploadedFile(commentId, buf, file.name || "upload");
+  const originalFilename = ("name" in file && typeof file.name === "string" && file.name) || "upload";
+  const mimeType = ("type" in file && file.type) || "application/octet-stream";
+
+  let storagePath = `db/${commentId}/${randomBytes(8).toString("hex")}`;
+  try {
+    const saved = await saveUploadedFile(commentId, buf, originalFilename);
+    storagePath = saved.storagePath;
+  } catch {
+    /* The database copy below is what the browser downloads. A disk folder is optional. */
+  }
 
   const row = await prisma.attachment.create({
     data: {
       commentId,
       storagePath,
-      originalFilename: file.name || "upload",
-      mimeType: file.type || "application/octet-stream",
+      originalFilename,
+      mimeType,
       sizeBytes: BigInt(buf.length),
+      content: new Uint8Array(buf),
     },
   });
 

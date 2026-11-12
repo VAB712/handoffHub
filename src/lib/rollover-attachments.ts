@@ -1,12 +1,13 @@
-import { readFile } from "fs/promises";
 import type { Prisma } from "@prisma/client";
-import { ensureAttachmentsRoot, resolveStorageAbsolutePath, saveUploadedFile } from "@/lib/attachments-fs";
+import { randomBytes } from "crypto";
+import { readAttachmentBytes, saveUploadedFile, toStoredBytes } from "@/lib/attachments-fs";
 
 type AttachmentRow = {
   storagePath: string;
   originalFilename: string;
   mimeType: string;
   sizeBytes: bigint;
+  content: Uint8Array | null;
 };
 
 export async function copyAttachmentsToNewComment(
@@ -14,11 +15,28 @@ export async function copyAttachmentsToNewComment(
   oldAttachments: AttachmentRow[],
   newCommentId: string,
 ): Promise<void> {
-  ensureAttachmentsRoot();
   for (const a of oldAttachments) {
-    const abs = resolveStorageAbsolutePath(a.storagePath);
-    const buf = await readFile(abs);
-    const { storagePath } = await saveUploadedFile(newCommentId, buf, a.originalFilename);
+    const fromDb = toStoredBytes(a.content);
+    let fromDisk: Buffer | null = null;
+    if (!fromDb) {
+      try {
+        fromDisk = await readAttachmentBytes(a.storagePath);
+      } catch {
+        fromDisk = null;
+      }
+    }
+    const buf = fromDb ? Buffer.from(fromDb) : fromDisk;
+    if (!buf) {
+      throw new Error(`Attachment file is missing: ${a.originalFilename}`);
+    }
+
+    let storagePath = `db/${newCommentId}/${randomBytes(8).toString("hex")}`;
+    try {
+      const saved = await saveUploadedFile(newCommentId, buf, a.originalFilename);
+      storagePath = saved.storagePath;
+    } catch {
+      /* Keep the bytes on the new handoff row when the disk folder cannot be written. */
+    }
     await tx.attachment.create({
       data: {
         commentId: newCommentId,
@@ -26,6 +44,7 @@ export async function copyAttachmentsToNewComment(
         originalFilename: a.originalFilename,
         mimeType: a.mimeType,
         sizeBytes: a.sizeBytes,
+        content: new Uint8Array(buf),
       },
     });
   }

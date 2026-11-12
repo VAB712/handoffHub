@@ -39,3 +39,13 @@ export async function requireWorkspaceAccess(
   if (!access) return { error: "Forbidden", status: 403 };
   return { userId: session.user.id };
 }
+
+export async function requireWorkspaceAdmin(
+  workspaceId: string,
+): Promise<{ userId: string } | { error: string; status: 401 | 403 | 404 }> {
+  const access = await requireWorkspaceAccess(workspaceId);
+  if ("error" in access) return access;
+  const admin = await requireAdmin();
+  if (!admin) return { error: "Only an admin can schedule mail.", status: 403 };
+  return access;
+}

@@ -52,7 +52,6 @@ export async function POST(
       },
       include: {
         author: { select: { name: true, email: true } },
-        attachments: true,
       },
     });
   } catch (error) {

@@ -1,14 +1,12 @@
-import { mkdir, writeFile, unlink, rm } from "fs/promises";
+import { mkdir, writeFile, unlink, rm, readFile } from "fs/promises";
 import { createReadStream, existsSync } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { getAttachmentsDir } from "./env";
 
-export function ensureAttachmentsRoot(): string {
+export async function ensureAttachmentsRoot(): Promise<string> {
   const root = getAttachmentsDir();
-  if (!existsSync(root)) {
-    mkdir(root, { recursive: true }).catch(() => {});
-  }
+  await mkdir(root, { recursive: true });
   return root;
 }
 
@@ -17,7 +15,7 @@ export async function saveUploadedFile(
   buffer: Buffer,
   originalName: string,
 ): Promise<{ storagePath: string; storedName: string }> {
-  const root = ensureAttachmentsRoot();
+  const root = await ensureAttachmentsRoot();
   const dir = join(root, commentId);
   await mkdir(dir, { recursive: true });
   const ext = originalName.includes(".") ? originalName.slice(originalName.lastIndexOf(".")) : "";
@@ -36,6 +34,23 @@ export function resolveStorageAbsolutePath(storagePath: string): string {
 export function readAttachmentStream(storagePath: string) {
   const abs = resolveStorageAbsolutePath(storagePath);
   return createReadStream(abs);
+}
+
+export async function readAttachmentBytes(storagePath: string): Promise<Buffer | null> {
+  try {
+    const abs = resolveStorageAbsolutePath(storagePath);
+    if (!existsSync(abs)) return null;
+    return await readFile(abs);
+  } catch {
+    return null;
+  }
+}
+
+export function toStoredBytes(content: Uint8Array | Buffer | null | undefined): Uint8Array | null {
+  if (!content || content.byteLength === 0) return null;
+  const copy = new Uint8Array(content.byteLength);
+  copy.set(content);
+  return copy;
 }
 
 export async function deleteAttachmentFile(storagePath: string) {
